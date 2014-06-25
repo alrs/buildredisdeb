@@ -1,0 +1,129 @@
+#!/usr/bin/env python2
+
+import argparse
+import os
+import pwd
+import shutil
+import subprocess
+import urllib
+
+DEPENDS = ["git", "dpkg-buildpackage"]
+
+DEB_DEPENDS = ["libjemalloc-dev", "debhelper", "build-essential"]
+
+OGWD = os.getcwd()
+
+DIR = dict()
+DIR['BUILD'] = "/tmp/redis"
+
+REDIS_URL_TEMPLATE = "http://download.redis.io/releases/redis-{}.tar.gz"
+REDIS_PKG_URL = "https://github.com/lamby/pkg-redis"
+GIT_TAG_CMD_TEMPLATE = "git checkout debian/{}-1"
+APT_GET_TEMPLATE = "DEBIAN_FRONTEND=noninteractive apt-get -y install {}"
+
+
+class GitCheckoutError(Exception):
+    pass
+
+
+class GitTagCheckoutError(Exception):
+    pass
+
+
+class PackageBuildError(Exception):
+    pass
+
+
+class DependencyUnavailableError(Exception):
+    pass
+
+
+class InstallDebianDependencyError(Exception):
+    pass
+
+
+def build_package():
+    try:
+        chdir_repo()
+        if subprocess.call("dpkg-buildpackage", shell=True) != 0:
+            raise PackageBuildError
+    finally:
+        os.chdir(OGWD)
+
+
+def chdir_repo():
+    os.chdir(os.path.join(DIR['BUILD'], 'pkg-redis'))
+
+
+def checkout_tag(version):
+    try:
+        chdir_repo()
+        if subprocess.call(GIT_TAG_CMD_TEMPLATE.format(version),
+                            shell=True) != 0:
+                raise GitTagCheckoutError
+    finally:
+        os.chdir(OGWD)
+
+
+def checkout_redis_pkg():
+    try:
+        os.chdir(os.path.join(DIR['BUILD']))
+        if subprocess.call("git clone {}".format(REDIS_PKG_URL),
+                shell=True) != 0:
+            raise GitCheckoutError()
+    finally:
+        os.chdir(OGWD)
+
+
+def create_build_directory():
+    os.mkdir(DIR['BUILD'])
+
+
+def delete_build_directory():
+    shutil.rmtree(DIR['BUILD'])
+
+
+def download_redis_tarball(version):
+    url = REDIS_URL_TEMPLATE.format(version)
+    print "download {}".format(url)
+    tarball = "redis_{}.orig.tar.gz".format(version)
+    destination = os.path.join(os.path.join(DIR['BUILD'], tarball))
+    urllib.urlretrieve(url, destination)
+
+
+def drop_priv(user):
+    uid = pwd.getpwnam(user).pw_uid
+    gid = pwd.getpwnam(user).pw_gid
+    os.setgid(gid)
+    os.setuid(uid)
+
+
+def install_build_dependencies(deps):
+    for dep in deps:
+        command = APT_GET_TEMPLATE.format(dep)
+        print command
+        if subprocess.call(command, shell=True) != 0:
+            raise InstallDebianDependencyError(dep)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--redis-version', dest='redis_version', required=True,
+                        help="select desired version of redis to build")
+    args = parser.parse_args()
+    version = args.redis_version
+
+    install_build_dependencies(DEB_DEPENDS)
+
+    if os.path.exists(DIR["BUILD"]):
+        delete_build_directory()
+
+    drop_priv('nobody')
+    create_build_directory()
+    download_redis_tarball(version)
+    checkout_redis_pkg()
+    checkout_tag(version)
+    build_package()
+
+if __name__ == "__main__":
+    main()
